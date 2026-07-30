@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+ENV/
+env/
+
+# Flask database and instance files
+instance/
+cvd_database.db
+
+# Python bytecode and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IDE settings and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
