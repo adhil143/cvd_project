@@ -939,21 +939,69 @@ REGISTER_TEMPLATE = """
                     <div class="success-message">{{ success }}</div>
                 {% endif %}
                 
-                <form method="POST">
+                <form method="POST" onsubmit="return validateForm()">
                     <div class="form-group">
                         <label for="username">Desired Username</label>
                         <input type="text" name="username" id="username" required placeholder="e.g. dr_smith">
                     </div>
                     <div class="form-group">
-                        <label for="password">Password</label>
-                        <input type="password" name="password" id="password" required placeholder="••••••••">
+                        <label for="password">Password (min 6 characters)</label>
+                        <input type="password" name="password" id="password" required placeholder="••••••••" minlength="6" oninput="checkMatch()">
                     </div>
                     <div class="form-group">
                         <label for="confirm_password">Confirm Password</label>
-                        <input type="password" name="confirm_password" id="confirm_password" required placeholder="••••••••">
+                        <input type="password" name="confirm_password" id="confirm_password" required placeholder="••••••••" minlength="6" oninput="checkMatch()">
+                        <div id="match-status" style="font-size: 0.8rem; margin-top: 0.35rem; font-weight: 500;"></div>
                     </div>
-                    <button type="submit">Create Account</button>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.25rem; font-size: 0.85rem; color: var(--text-muted); cursor: pointer;">
+                        <input type="checkbox" id="show-pass" onchange="togglePasswords(this.checked)" style="width: auto; cursor: pointer;">
+                        <label for="show-pass" style="margin: 0; cursor: pointer; font-weight: normal; color: inherit;">Show passwords</label>
+                    </div>
+                    <button type="submit" id="submit-btn">Create Account</button>
                 </form>
+                
+                <script>
+                    function togglePasswords(show) {
+                        const p1 = document.getElementById('password');
+                        const p2 = document.getElementById('confirm_password');
+                        const type = show ? 'text' : 'password';
+                        p1.type = type;
+                        p2.type = type;
+                    }
+                    
+                    function checkMatch() {
+                        const p1 = document.getElementById('password').value;
+                        const p2 = document.getElementById('confirm_password').value;
+                        const status = document.getElementById('match-status');
+                        
+                        if (!p2) {
+                            status.innerHTML = '';
+                            return;
+                        }
+                        
+                        if (p1 === p2) {
+                            status.style.color = '#16a34a';
+                            status.innerHTML = '✓ Passwords match';
+                        } else {
+                            status.style.color = '#dc2626';
+                            status.innerHTML = '✗ Passwords do not match';
+                        }
+                    }
+                    
+                    function validateForm() {
+                        const p1 = document.getElementById('password').value;
+                        const p2 = document.getElementById('confirm_password').value;
+                        if (p1 !== p2) {
+                            alert('Passwords do not match! Please check both fields.');
+                            return false;
+                        }
+                        if (p1.length < 6) {
+                            alert('Password must be at least 6 characters.');
+                            return false;
+                        }
+                        return true;
+                    }
+                </script>
                 
                 <div style="margin-top: 1.5rem; text-align: center; font-size: 0.9rem; color: var(--text-muted);">
                     Already registered? <a href="/login" style="color: var(--primary); font-weight: 600; text-decoration: none;">Log In</a>
