@@ -35,7 +35,7 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 
 # ReportLab imports for PDF generation
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -59,6 +59,7 @@ class Patient(db.Model):
     name = db.Column(db.String(100), nullable=False)
     gender = db.Column(db.String(10), nullable=False)  # "Male" or "Female"
     dob = db.Column(db.String(10), nullable=False)     # YYYY-MM-DD
+    fhir_id = db.Column(db.String(50), nullable=True, unique=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationship to visits
@@ -143,6 +144,16 @@ def log_audit(action, patient_id=None):
 # Create tables and seed default users on startup
 with app.app_context():
     db.create_all()
+    
+    # Dynamically upgrade schema for patients table if fhir_id is missing
+    from sqlalchemy import text
+    try:
+        db.session.execute(text("ALTER TABLE patients ADD COLUMN fhir_id VARCHAR(50)"))
+        db.session.commit()
+        print("Database migrated: fhir_id column added to patients table.")
+    except Exception:
+        db.session.rollback()
+
     if User.query.first() is None:
         # Seed admin
         admin = User(username="admin", role="Administrator")
@@ -170,6 +181,35 @@ threshold = joblib.load("threshold.pkl")
 scaler_feature_order = list(scaler.feature_names_in_)
 
 explainer = shap.TreeExplainer(model)
+
+
+CHEST_PAIN_EDUCATION = {
+    "TA": {
+        "name": "Typical Angina",
+        "description": "Chest pain or pressure that happens when the heart muscle does not get enough oxygen-rich blood. This is usually triggered by physical activity, heavy meals, or emotional stress, and typically subsides with rest or nitroglycerin.",
+        "causes": "Narrowing or blockages in the coronary arteries that supply blood to the heart (Coronary Artery Disease).",
+        "overcome": "Follow a cardiologist-supervised care plan. This often includes heart-healthy dietary changes (low-fat, low-sodium), regular moderate exercise as tolerated, taking prescribed medications (such as beta-blockers or antiplatelet agents), and avoiding sudden overexertion."
+    },
+    "ATA": {
+        "name": "Atypical Angina",
+        "description": "Chest discomfort that does not fit the typical description. It may present as shortness of breath, indigestion, fatigue, or radiating pain in the back, neck, or jaw. It is particularly common in women, older adults, and individuals with diabetes.",
+        "causes": "Spasms in the heart's blood vessels or dysfunction in the very small coronary arteries (Microvascular Disease).",
+        "overcome": "Keep a daily symptom diary to track triggers, manage stress through breathing exercises, limit caffeine, take prescribed calcium-channel blockers or other treatments, and monitor for changes in pain patterns."
+    },
+    "NAP": {
+        "name": "Non-Anginal Pain",
+        "description": "Chest discomfort that is unlikely to be related to a heart condition. This pain often changes when you take a deep breath, press on your chest wall, or shift your physical posture.",
+        "causes": "Common non-cardiac causes include gastroesophageal reflux (acid reflux/heartburn), muscle strain or joint inflammation in the chest wall (costochondritis), or panic/anxiety attacks.",
+        "overcome": "Treat the underlying non-cardiac cause. For reflux, avoid lying down immediately after eating and eat smaller meals. For muscle pain, use warm compresses and rest. For anxiety-related pain, practice mindfulness and consult a therapist if needed."
+    },
+    "ASY": {
+        "name": "Asymptomatic",
+        "description": "No chest pain, pressure, or discomfort is felt. Even without symptoms, cardiovascular risk can still be elevated due to other underlying silent indicators.",
+        "causes": "Silent myocardial ischemia, which is often seen in individuals with diabetes because nerve damage (neuropathy) can block pain signals from the heart.",
+        "overcome": "Ensure regular checkups with your doctor. Focus on strict control of blood pressure, blood sugar, and cholesterol, and follow a balanced diet and safe exercise regimen."
+    }
+}
+
 
 # ---------- Figure out which raw form fields we need ----------
 # top5_features will look something like:
@@ -611,6 +651,7 @@ LOGIN_TEMPLATE = """
 <body>
     <div class="split-container">
         <!-- Left Side: Image Panel -->
+
         <div class="image-panel">
             <div class="image-overlay">
                 <div class="overlay-text">
@@ -644,8 +685,282 @@ LOGIN_TEMPLATE = """
                     <button type="submit">Log In</button>
                 </form>
                 
+                <div style="margin-top: 1.5rem; text-align: center; font-size: 0.9rem; color: var(--text-muted);">
+                    New medical staff? <a href="/register" style="color: var(--primary); font-weight: 600; text-decoration: none;">Register as Doctor</a>
+                </div>
+                
                 <div style="margin-top: 2rem; text-align: center; font-size: 0.8rem; color: var(--text-muted);">
                     Secure Session • HIPAA Audited
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+REGISTER_TEMPLATE = """
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Register - CVD CDSS</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #f1f5f9;
+            --card-bg: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --border-color: #e2e8f0;
+            --error-color: #dc2626;
+            --success-color: #16a34a;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .split-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            width: 100%;
+            min-height: 100vh;
+        }
+
+        .image-panel {
+            background-image: url('/static/login_art.jpg');
+            background-size: cover;
+            background-position: center;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 4rem;
+            color: white;
+        }
+
+        .image-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(30, 27, 75, 0.4) 0%, rgba(15, 23, 42, 0.8) 100%);
+            z-index: 1;
+        }
+
+        .image-overlay {
+            position: relative;
+            z-index: 2;
+        }
+
+        .overlay-text h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .overlay-text p {
+            font-size: 1rem;
+            color: #cbd5e1;
+            max-width: 480px;
+            line-height: 1.6;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        }
+
+        .form-panel {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2.5rem;
+            background-color: #f8fafc;
+        }
+
+        .login-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            width: 100%;
+            max-width: 420px;
+            padding: 2.5rem;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin: 0 0 0.5rem 0;
+            color: var(--text-main);
+            background: linear-gradient(135deg, #1e1b4b 0%, #4f46e5 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .login-header p {
+            color: var(--text-muted);
+            margin: 0;
+            font-size: 0.95rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text-main);
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            font-family: inherit;
+            font-size: 0.95rem;
+            color: var(--text-main);
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+        }
+
+        .error-message {
+            background-color: rgba(220, 38, 38, 0.1);
+            color: var(--error-color);
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+            text-align: center;
+            border: 1px solid rgba(220, 38, 38, 0.2);
+        }
+
+        .success-message {
+            background-color: rgba(22, 163, 74, 0.1);
+            color: var(--success-color);
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+            text-align: center;
+            border: 1px solid rgba(22, 163, 74, 0.2);
+        }
+
+        button {
+            width: 100%;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);
+        }
+
+        button:hover {
+            background-color: var(--primary-hover);
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        @media (max-width: 850px) {
+            .split-container {
+                grid-template-columns: 1fr;
+            }
+            .image-panel {
+                display: none;
+            }
+            .form-panel {
+                padding: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="split-container">
+        <!-- Left Side: Image Panel -->
+        <div class="image-panel">
+            <div class="image-overlay">
+                <div class="overlay-text">
+                    <h2>Advanced Cardiovascular Diagnostics</h2>
+                    <p>Clinical Decision Support powered by explainable AI algorithms.</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Right Side: Form Panel -->
+        <div class="form-panel">
+            <div class="login-card">
+                <div class="login-header">
+                    <h1>CVD CDSS</h1>
+                    <p>Register Clinician Account</p>
+                </div>
+                
+                {% if error %}
+                    <div class="error-message">{{ error }}</div>
+                {% endif %}
+                {% if success %}
+                    <div class="success-message">{{ success }}</div>
+                {% endif %}
+                
+                <form method="POST">
+                    <div class="form-group">
+                        <label for="username">Desired Username</label>
+                        <input type="text" name="username" id="username" required placeholder="e.g. dr_smith">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" name="password" id="password" required placeholder="••••••••">
+                    </div>
+                    <div class="form-group">
+                        <label for="confirm_password">Confirm Password</label>
+                        <input type="password" name="confirm_password" id="confirm_password" required placeholder="••••••••">
+                    </div>
+                    <button type="submit">Create Account</button>
+                </form>
+                
+                <div style="margin-top: 1.5rem; text-align: center; font-size: 0.9rem; color: var(--text-muted);">
+                    Already registered? <a href="/login" style="color: var(--primary); font-weight: 600; text-decoration: none;">Log In</a>
+                </div>
+                
+                <div style="margin-top: 2rem; text-align: center; font-size: 0.8rem; color: var(--text-muted);">
+                    Secure Registration • HIPAA Audited
                 </div>
             </div>
         </div>
@@ -1208,27 +1523,35 @@ PAGE_TEMPLATE = """
                     <div class="sub-card">
                         <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 1rem; color: var(--text-main);">Patient Information</h3>
                         
-                        <div class="form-group">
-                            <label for="patient_id">Select Patient</label>
-                            <select name="patient_id" id="patient_id" onchange="loadPatient(this.value)">
-                                <option value="">-- Register New Patient --</option>
-                                {% for p in patients %}
-                                    <option value="{{ p.id }}" {% if selected_patient and selected_patient.id == p.id %}selected{% endif %}>
-                                        {{ p.name }} (DOB: {{ p.dob }})
-                                    </option>
-                                {% endfor %}
-                            </select>
-                        </div>
+                        <!-- Hidden input for patient_id since dropdown is removed -->
+                        <input type="hidden" name="patient_id" id="patient_id" value="">
                         
-                        <div class="form-group" style="display: flex; gap: 0.5rem; align-items: flex-end;">
-                            <div style="flex: 1;">
-                                <label for="ehr_id">Fetch from EHR (FHIR ID)</label>
-                                <input type="text" id="ehr_id" placeholder="e.g. fhir-1" style="width: 100%; padding: 0.75rem 1rem; border: 1px solid var(--border-color); border-radius: 0.5rem; font-family: inherit; font-size: 0.95rem; color: var(--text-main); box-sizing: border-box;">
+                        <div class="form-group" style="margin-bottom: 1rem;">
+                            <label>Intake Method</label>
+                            <div style="display: flex; gap: 1.5rem; margin-top: 0.25rem;">
+                                <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; color: var(--text-main);">
+                                    <input type="radio" name="intake_method" value="manual" checked onchange="toggleIntakeMode(this.value)" style="width: auto; margin: 0;"> Register New Patient
+                                </label>
+                                <label style="font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; color: var(--text-main);">
+                                    <input type="radio" name="intake_method" value="fhir" onchange="toggleIntakeMode(this.value)" style="width: auto; margin: 0;"> Fetch from EHR (FHIR)
+                                </label>
                             </div>
-                            <button type="button" onclick="fetchEHR()" style="width: auto; padding: 0.75rem 1.25rem; font-size: 0.9rem; background-color: var(--primary); color: white; border: none; border-radius: 0.5rem; cursor: pointer; white-space: nowrap; margin-bottom: 0;">Fetch</button>
+                        </div>
+
+                        <!-- FHIR Search Field (Initially hidden) -->
+                        <div id="fhir_fields_container" style="display: none; margin-bottom: 1rem; border-left: 3px solid var(--primary-light); padding-left: 1rem;">
+                            <div class="form-group" style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                                <div style="flex: 1;">
+                                    <label for="ehr_id">Fetch from EHR (FHIR ID)</label>
+                                    <input type="text" id="ehr_id" placeholder="e.g. fhir-1" style="width: 100%; padding: 0.75rem 1rem; border: 1px solid var(--border-color); border-radius: 0.5rem; font-family: inherit; font-size: 0.95rem; color: var(--text-main); box-sizing: border-box;">
+                                </div>
+                                <button type="button" onclick="fetchEHR()" style="width: auto; padding: 0.75rem 1.25rem; font-size: 0.9rem; background-color: var(--primary); color: white; border: none; border-radius: 0.5rem; cursor: pointer; white-space: nowrap; margin-bottom: 0;">Fetch</button>
+                            </div>
+                            <div id="fhir_patient_summary" style="display: none; padding: 0.5rem; background-color: var(--success-light); color: var(--success); border: 1px solid var(--success-border); border-radius: 0.375rem; font-size: 0.85rem; margin-top: 0.5rem;"></div>
                         </div>
                         
-                        <div id="new_patient_fields" style="{% if selected_patient %}display: none;{% endif %} border-left: 3px solid var(--primary-light); padding-left: 1rem; margin-top: 1rem;">
+                        <!-- Manual Entry Fields (Initially visible) -->
+                        <div id="new_patient_fields" style="border-left: 3px solid var(--primary-light); padding-left: 1rem; margin-top: 1rem;">
                             <div class="form-group">
                                 <label for="patient_name">Patient Name</label>
                                 <input type="text" name="patient_name" id="patient_name" placeholder="John Doe">
@@ -1243,6 +1566,10 @@ PAGE_TEMPLATE = """
                                     <option value="Male">Male</option>
                                     <option value="Female">Female</option>
                                 </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="patient_fhir_id">Patient EHR FHIR ID (Optional)</label>
+                                <input type="text" name="patient_fhir_id" id="patient_fhir_id" placeholder="e.g. fhir-1">
                             </div>
                         </div>
                     </div>
@@ -1354,15 +1681,17 @@ PAGE_TEMPLATE = """
                         </div>
                     {% endif %}
                 </div>
-                
                 <!-- Patient History & Trajectory -->
                 {% if selected_patient %}
-                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+                    <div style="border-top: 1px solid var(--border-color); padding-top: 1.5rem; margin-top: 1.5rem;">
                         <h2 class="card-title" style="margin-bottom: 1rem;">Patient History</h2>
                         <div style="margin-bottom: 1.5rem;">
                             <span class="patient-details-badge">Name: {{ selected_patient.name }}</span>
                             <span class="patient-details-badge">DOB: {{ selected_patient.dob }}</span>
                             <span class="patient-details-badge">Gender: {{ selected_patient.gender }}</span>
+                            {% if selected_patient.fhir_id %}
+                                <span class="patient-details-badge" style="background-color: var(--primary-light); color: var(--primary); font-weight: 600;">FHIR ID: {{ selected_patient.fhir_id }}</span>
+                            {% endif %}
                         </div>
                         
                         {% if trajectory_chart %}
@@ -1385,11 +1714,30 @@ PAGE_TEMPLATE = """
                         </div>
                     </div>
                 {% endif %}
-                
             </div>
         </div>
     </div>
     <script>
+        function toggleIntakeMode(mode) {
+            const manualContainer = document.getElementById("new_patient_fields");
+            const fhirContainer = document.getElementById("fhir_fields_container");
+            if (mode === "manual") {
+                manualContainer.style.display = "block";
+                fhirContainer.style.display = "none";
+                // Reset hidden fields
+                document.getElementById("patient_name").value = "";
+                document.getElementById("patient_dob").value = "";
+                document.getElementById("patient_gender").value = "Male";
+                document.getElementById("patient_fhir_id").value = "";
+            } else {
+                manualContainer.style.display = "none";
+                fhirContainer.style.display = "block";
+                // Reset summary
+                document.getElementById("fhir_patient_summary").style.display = "none";
+                document.getElementById("fhir_patient_summary").innerHTML = "";
+            }
+        }
+
         function loadPatient(patientId) {
             var fields = document.getElementById("new_patient_fields");
             if (patientId) {
@@ -1416,16 +1764,21 @@ PAGE_TEMPLATE = """
                 
                 // Show new patient fields if currently hidden
                 document.getElementById("patient_id").value = "";
-                document.getElementById("new_patient_fields").style.display = "block";
                 
                 // Fill in patient details
                 const patientName = data.name[0].given.join(" ") + " " + data.name[0].family;
                 document.getElementById("patient_name").value = patientName;
                 document.getElementById("patient_dob").value = data.birthDate;
+                document.getElementById("patient_fhir_id").value = ehrId; // Populate FHIR ID field
                 
                 // Gender mapping
                 const gender = data.gender.charAt(0).toUpperCase() + data.gender.slice(1);
                 document.getElementById("patient_gender").value = gender;
+                
+                // Show summary badge since details are hidden
+                const summaryEl = document.getElementById("fhir_patient_summary");
+                summaryEl.innerHTML = `<strong>Active EHR Record:</strong> ${patientName} (DOB: ${data.birthDate}, ${gender})`;
+                summaryEl.style.display = "block";
                 
                 // Fill in clinical metrics if elements exist
                 if (data.clinicalObservations) {
@@ -1507,6 +1860,11 @@ PAGE_TEMPLATE = """
 def index():
     result = None
     selected_patient_id = request.args.get("patient_id") or request.form.get("patient_id")
+    
+    # Ignore URL patient_id if manually registering a new patient
+    if request.method == "POST" and request.form.get("intake_method") == "manual":
+        selected_patient_id = None
+        
     selected_patient = None
     trajectory_chart = None
     previous_visits = []
@@ -1527,9 +1885,23 @@ def index():
         risk_pct = round(float(proba) * 100, 1)
 
         # Get or create Patient
-        if selected_patient_id:
+        fhir_id = request.form.get("patient_fhir_id")
+        if fhir_id == "":
+            fhir_id = None
+            
+        patient = None
+        # Check if patient with this FHIR ID already exists to avoid duplication / constraint errors
+        if fhir_id:
+            patient = Patient.query.filter_by(fhir_id=fhir_id).first()
+            
+        if not patient and selected_patient_id:
             patient = db.session.get(Patient, selected_patient_id)
-        else:
+            # Update fhir_id if provided and different
+            if fhir_id and patient.fhir_id != fhir_id:
+                patient.fhir_id = fhir_id
+                db.session.commit()
+                
+        if not patient:
             name = request.form.get("patient_name")
             dob = request.form.get("patient_dob")
             gender = request.form.get("patient_gender")
@@ -1537,7 +1909,7 @@ def index():
                 name = name or "Unknown Patient"
                 dob = dob or "1970-01-01"
                 gender = gender or "Male"
-            patient = Patient(name=name, dob=dob, gender=gender)
+            patient = Patient(name=name, dob=dob, gender=gender, fhir_id=fhir_id)
             db.session.add(patient)
             db.session.commit()
             # Log registration action
@@ -1620,6 +1992,37 @@ def login():
     return render_template_string(LOGIN_TEMPLATE, error=error)
 
 
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    success = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        
+        if not username or not password or not confirm_password:
+            error = "All fields are required"
+        elif password != confirm_password:
+            error = "Passwords do not match"
+        elif len(password) < 6:
+            error = "Password must be at least 6 characters long"
+        else:
+            existing_user = User.query.filter_by(username=username).first()
+            if existing_user:
+                error = "Username already exists"
+            else:
+                new_user = User(username=username, role="Clinician")
+                new_user.set_password(password)
+                db.session.add(new_user)
+                db.session.commit()
+                # Log registry action
+                log_audit(f"REGISTER_USER: {username}")
+                return redirect(url_for("login"))
+                
+    return render_template_string(REGISTER_TEMPLATE, error=error, success=success)
+
+
 @app.route("/logout")
 @login_required
 def logout():
@@ -1656,6 +2059,20 @@ MOCK_FHIR_PATIENTS = {
             "ChestPainType": "ATA",
             "Oldpeak": "0.0"
         }
+    },
+    "fhir-3": {
+        "resourceType": "Patient",
+        "id": "fhir-3",
+        "name": [{"family": "Miller", "given": ["Charles"]}],
+        "gender": "male",
+        "birthDate": "1955-11-23",
+        "clinicalObservations": {
+            "Sex_M": "1",
+            "ExerciseAngina_Y": "1",
+            "ST_Slope": "Flat",
+            "ChestPainType": "TA",
+            "Oldpeak": "2.4"
+        }
     }
 }
 
@@ -1668,7 +2085,31 @@ def get_fhir_patient(patient_id):
     
     patient_data = MOCK_FHIR_PATIENTS.get(patient_id)
     if not patient_data:
-        return jsonify({"error": "Patient not found in EHR"}), 404
+        # Fallback: Query local SQLite database for a patient with this fhir_id
+        local_patient = Patient.query.filter_by(fhir_id=patient_id).first()
+        if local_patient:
+            # Get latest visit metrics if available to pre-fill the form
+            latest_visit = Visit.query.filter_by(patient_id=local_patient.id).order_by(Visit.visit_date.desc()).first()
+            obs = {}
+            if latest_visit:
+                obs = {
+                    "Sex_M": latest_visit.sex,
+                    "ExerciseAngina_Y": latest_visit.exercise_angina,
+                    "ST_Slope": latest_visit.st_slope,
+                    "ChestPainType": latest_visit.chest_pain,
+                    "Oldpeak": str(latest_visit.oldpeak)
+                }
+            patient_data = {
+                "resourceType": "Patient",
+                "id": local_patient.fhir_id,
+                "name": [{"family": local_patient.name.split()[-1] if len(local_patient.name.split()) > 1 else "", 
+                          "given": local_patient.name.split()[:-1] if len(local_patient.name.split()) > 1 else [local_patient.name]}],
+                "gender": local_patient.gender.lower(),
+                "birthDate": local_patient.dob,
+                "clinicalObservations": obs
+            }
+        else:
+            return jsonify({"error": "Patient not found in EHR or local database"}), 404
         
     return jsonify(patient_data)
 
@@ -1825,7 +2266,9 @@ def export_pdf(visit_id):
         [Paragraph("<b>Patient Name:</b>", body_style), Paragraph(patient.name, body_style),
          Paragraph("<b>Date of Birth:</b>", body_style), Paragraph(patient.dob, body_style)],
         [Paragraph("<b>Gender:</b>", body_style), Paragraph(patient.gender, body_style),
-         Paragraph("<b>Patient ID:</b>", body_style), Paragraph(patient.id, body_style)]
+         Paragraph("<b>EHR FHIR ID:</b>", body_style), Paragraph(patient.fhir_id or "Not Linked", body_style)],
+        [Paragraph("<b>Record UUID:</b>", body_style), Paragraph(patient.id, body_style),
+         Paragraph("", body_style), Paragraph("", body_style)]
     ]
     t = Table(data, colWidths=[110, 150, 100, 160])
     t.setStyle(TableStyle([
@@ -1876,6 +2319,43 @@ def export_pdf(visit_id):
     chart_io = io.BytesIO(chart_data)
     img = Image(chart_io, width=320, height=117)
     elements.append(img)
+    
+    # Page 2: Patient Education Guide
+    elements.append(PageBreak())
+    elements.append(Paragraph("Patient Education Guide: Understanding Your Condition", title_style))
+    elements.append(Paragraph("This educational section is designed to help you understand your symptoms, clinical findings, and risk factors in simple terms. Always consult your physician for personalized medical advice.", body_style))
+    elements.append(Spacer(1, 12))
+    
+    # Specific patient symptom education
+    cp_code = visit.chest_pain
+    cp_info = CHEST_PAIN_EDUCATION.get(cp_code, CHEST_PAIN_EDUCATION["ASY"])
+    
+    elements.append(Paragraph(f"Your Symptom Classification: {cp_info['name']}", section_style))
+    elements.append(Paragraph(f"<b>What is it?</b><br/>{cp_info['description']}", body_style))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(f"<b>Typical Clinical Causes:</b><br/>{cp_info['causes']}", body_style))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(f"<b>How to manage & overcome:</b><br/>{cp_info['overcome']}", body_style))
+    elements.append(Spacer(1, 15))
+    
+    # Reference guide table for all chest pain types
+    elements.append(Paragraph("Reference Guide: Chest Pain Types & Causes", section_style))
+    ref_data = [
+        [Paragraph("<b>Classification</b>", body_bold), Paragraph("<b>Clinical Meaning & Common Causes</b>", body_bold)]
+    ]
+    for code, info in CHEST_PAIN_EDUCATION.items():
+        ref_data.append([
+            Paragraph(f"<b>{info['name']} ({code})</b>", body_bold),
+            Paragraph(f"<i>What is it:</i> {info['description']}<br/><i>Common Causes:</i> {info['causes']}<br/><i>Management:</i> {info['overcome']}", body_style)
+        ])
+    t_ref = Table(ref_data, colWidths=[130, 390])
+    t_ref.setStyle(TableStyle([
+        ('LINEBELOW', (0,0), (-1,-1), 0.5, colors.HexColor('#e2e8f0')),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f8fafc')),
+        ('PADDING', (0,0), (-1,-1), 6),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+    ]))
+    elements.append(t_ref)
     
     # Build
     doc.build(elements)
